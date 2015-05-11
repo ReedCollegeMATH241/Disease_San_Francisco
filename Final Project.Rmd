@@ -1,0 +1,425 @@
+---
+title: "Exploring Possible Contributing Factors to Disease Rates in San Francisco"
+author: "Emmeline Hill"
+date: "May 6, 2015"
+output: html_document
+---
+##Background
+  Obsesity is widely viewed as one of the greatest public health problems facing Americans today. Levels of obesity have been on the rise since the 1980s at an astounding rate and currently approximately 35% of the adult population is considered [obese] (http://www.cdc.gov/obesity/data/adult.html). Obesity is of particular concern as it is associated with other disease including diabetes, hypertension, and asthma.
+  Much of the literature surrounding the issue attributes high levels of obesity to a lack of access to good food and a lack of education about what good food is. Increasing nutrition education, increasing the number of bike paths, and increasing the number of food vendors selling fresh fruits and vegetables are often proposed as solutions, however, these efforts alone often fail to reduce obesity [rates] (http://www.latimes.com/local/california/la-me-0510-south-la-food-20150510-story.html#page=1). Public health officials and policy makers must consider other, possibly deeper rooted causes of obesity and other health risks if they wish to enact lasting change.
+  This project seeks to examine the rates of ER visits for asthma, diabetes, and hypertension as proxies for obesity and general community health in San Francisco
+by looking at race, class, and pollution as possible predictive factors. I chose to look at San Francisco as a model, because while it is considered one of the [healthiest cities] (http://www.forbes.com/sites/melaniehaiken/2014/05/30/the-20-healthiest-cities-in-america-2014/2/) it is also a city of great economic disparity and a city with neighborhoods that are often defined racially. Additionally, likely because SF is home more than its fair share of data analysts and "brogrammers" there was myriad free data available online.
+
+  Data was collected from three sources:
+  *Census data was collected from Social Explorer
+  *Income, education, PM2.5, and census tract shapefiles were collected from SF Open Data
+  *Disease Rates were collected from SFHIP
+
+```{r, echo=FALSE, warning=FALSE}
+#Loading data
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(rvest))
+suppressPackageStartupMessages(library(rgdal))
+suppressPackageStartupMessages(library(stringr))
+suppressPackageStartupMessages(library(sp))
+suppressPackageStartupMessages(library(ggmap))
+
+#Disease Data
+webpage <- html("http://www.sfhip.org/IndicatorCompare/554abfd88853c")
+
+diabetes <- webpage %>%
+  html_nodes("table")%>%
+  .[[2]] %>% 
+  html_table()
+  
+diabetes <- filter(diabetes, Source != "NA") %>%
+  select(Location, `ER visits/10,000 population 18+ years`)%>%
+  rename(er_per_10000_d = `ER visits/10,000 population 18+ years`)
+  
+hypertension <- webpage %>%
+  html_nodes("table")%>%
+  .[[3]] %>% 
+  html_table()
+
+hypertension <- filter(hypertension, Source != "NA")%>%
+  select(Location, `ER visits/10,000 population 18+ years`)%>%
+  rename(er_per_10000_h = `ER visits/10,000 population 18+ years`)
+
+asthma <- webpage %>%
+  html_nodes("table")%>%
+  .[[1]] %>% 
+  html_table()
+
+asthma <- filter(asthma, Source != "NA")%>%
+  select(Location, `ER visits/10,000 population 18+ years`) %>%
+  rename(er_per_10000_a = `ER visits/10,000 population 18+ years`)
+
+#Census Data
+sf_census <- read.csv("SF_census_data.csv", header=TRUE) %>% tbl_df()
+
+sf_census <- rename(sf_census, pop.dens = Population.Density..per.sq..mile.) %>%
+  rename(pop.male = Total.Population..Male) %>%
+  rename(pop.female = Total.Population..Female) %>%
+  rename(pop.white = Total.population..White.alone) %>%
+  rename(pop.black = Total.population..Black.or.African.American.alone) %>%
+  rename(pop.asian = Total.population..Asian.alone) %>%
+  rename(pop.pi = Total.population..Native.Hawaiian.and.Other.Pacific.Islander.alone) %>%
+  rename(pop.two = Total.population..Two.or.More.Races) %>%
+  rename(pop.other = Total.population..Some.Other.Race.alone) %>%
+  select (Neighborhood, ZIP, FIPS, Total.Population, pop.dens, pop.male, pop.female, pop.white, pop.black, pop.asian, pop.pi, pop.two, pop.other)
+
+sf_census$FIPS <- as.character(sf_census$FIPS)
+sf_census$FIPS <- str_pad(sf_census$FIPS, width = 11,side = "left", pad = "0")
+sf_census$Total.Population <- as.numeric(as.character(sf_census$Total.Population))
+sf_census$pop.dens <- as.numeric(as.character(sf_census$pop.dens))
+sf_census$pop.male <- as.numeric(as.character(sf_census$pop.male))
+sf_census$pop.female <- as.numeric(as.character(sf_census$pop.female))
+sf_census$pop.white <- as.numeric(as.character(sf_census$pop.white))
+sf_census$pop.black <- as.numeric(as.character(sf_census$pop.black))
+sf_census$pop.asian <- as.numeric(as.character(sf_census$pop.asian))
+sf_census$pop.pi <- as.numeric(as.character(sf_census$pop.pi))
+sf_census$pop.two <- as.numeric(as.character(sf_census$pop.two))
+sf_census$pop.other <- as.numeric(as.character(sf_census$pop.other))
+
+sf_census <- mutate(sf_census,
+    perc.male = 100*(pop.male/Total.Population),
+    perc.female = 100*(pop.female/Total.Population),
+    perc.white = 100*(pop.white/Total.Population),
+    perc.black = 100*(pop.black/Total.Population),
+    perc.asian = 100*((pop.asian+pop.pi)/Total.Population),
+    perc.other = 100*((pop.other+pop.two)/Total.Population))
+    
+#Map Data
+sftract2010.shapefile <- readOGR(dsn=".", layer="tl_2010_06075_tract10", verbose=FALSE) %>%
+  spTransform(CRS("+proj=longlat +ellps=WGS84"))
+
+sftract.map <- fortify(sftract2010.shapefile, region="GEOID10") %>% tbl_df()
+
+sftract.data <- sftract2010.shapefile@data %>% tbl_df()
+
+#Other Variables
+#College
+sfcollege.shapefile <- readOGR(dsn=".", layer="SanFranciscoCollegeEducated", verbose=FALSE) %>%
+  spTransform(CRS("+proj=longlat +ellps=WGS84"))
+
+sfcollege.data <- sfcollege.shapefile@data %>% tbl_df()
+
+sfcollege.data$Tract2000 <- str_pad(sfcollege.data$Tract2000, width = 6, side = "left", pad = "0")
+sfcollege.data$Tract2000 <- str_pad(sfcollege.data$Tract2000, width = 7, side = "left", pad = "5")
+sfcollege.data$Tract2000 <- str_pad(sfcollege.data$Tract2000, width = 8, side = "left", pad = "7")
+sfcollege.data$Tract2000 <- str_pad(sfcollege.data$Tract2000, width = 9, side = "left", pad = "0")
+sfcollege.data$Tract2000 <- str_pad(sfcollege.data$Tract2000, width = 10, side = "left", pad = "6")
+sfcollege.data$Tract2000 <- str_pad(sfcollege.data$Tract2000, width = 11, side = "left", pad = "0")
+
+#Income
+sfincome.shapefile <- readOGR(dsn=".", layer="SanFranciscoIncome", verbose=FALSE) %>%
+  spTransform(CRS("+proj=longlat +ellps=WGS84"))
+
+sfincome.data <- sfincome.shapefile@data %>% tbl_df()
+
+sfincome.data$Tract2000 <- str_pad(sfincome.data$Tract2000, width = 6, side = "left", pad = "0")
+sfincome.data$Tract2000 <- str_pad(sfincome.data$Tract2000, width = 7, side = "left", pad = "5")
+sfincome.data$Tract2000 <- str_pad(sfincome.data$Tract2000, width = 8, side = "left", pad = "7")
+sfincome.data$Tract2000 <- str_pad(sfincome.data$Tract2000, width = 9, side = "left", pad = "0")
+sfincome.data$Tract2000 <- str_pad(sfincome.data$Tract2000, width = 10, side = "left", pad = "6")
+sfincome.data$Tract2000 <- str_pad(sfincome.data$Tract2000, width = 11, side = "left", pad = "0")
+
+sfincome.data <- mutate (sfincome.data, med.income.10k = MedInc_d/10000)
+
+#PM 2.5 Levels
+sfPMlevels.shapefile <- readOGR(dsn=".", layer="SanFranciscoPMLevels_2010CensusTracts", verbose=FALSE) %>%
+  spTransform(CRS("+proj=longlat +ellps=WGS84"))
+
+sfcPMlevels.data <- sfPMlevels.shapefile@data %>% tbl_df()
+
+sfcPMlevels.data$Tract2010 <- str_pad(sfcPMlevels.data$Tract2010, width = 6, side = "left", pad = "0")
+sfcPMlevels.data$Tract2010 <- str_pad(sfcPMlevels.data$Tract2010, width = 7, side = "left", pad = "5")
+sfcPMlevels.data$Tract2010 <- str_pad(sfcPMlevels.data$Tract2010, width = 8, side = "left", pad = "7")
+sfcPMlevels.data$Tract2010 <- str_pad(sfcPMlevels.data$Tract2010, width = 9, side = "left", pad = "0")
+sfcPMlevels.data$Tract2010 <- str_pad(sfcPMlevels.data$Tract2010, width = 10, side = "left", pad = "6")
+sfcPMlevels.data$Tract2010 <- str_pad(sfcPMlevels.data$Tract2010, width = 11, side = "left", pad = "0")
+```
+
+  
+
+```{r, echo=FALSE, warning=FALSE}
+#Neighborhood Map
+sf_census1 <- inner_join (sf_census, sftract.data, by=c("FIPS" = "GEOID10"))
+
+census_map <- inner_join(sftract.map, sf_census1, by=c("id"="FIPS"))
+
+google.map <-
+  get_map(location = "San Francisco, CA", maptype = "roadmap", messaging = FALSE, zoom = 12, color = "color")
+
+ggmap(google.map) +
+  geom_polygon(data=census_map, aes(x=long, y=lat, group=group, fill=Neighborhood, size=.2, alpha=0.3))+
+  coord_map() +
+  guides(fill=FALSE)+
+  xlab("longitude") + ylab("latitude")+
+  ggtitle("Neighborhoods of San Francisco")
+
+```
+
+
+Before delving into the variables used, this first map allows us to orient ourselves in San Francisco and get a feel for the different neighborhoods (defined by zip code). This map was compiled by associating zip codes with census tracts (unfortunately this was done manually because I could not find an effective dataset that could join them). Worth noting: (a) census tracts and zip codes do not play nicely so the boundaries of some of the neighborhoods are a little off; (b) some census tracts do include parts of the bay, so do not be surprised in later maps by some of the stranger shapes.
+
+```{r, echo=FALSE, warning=FALSE}
+#Adding Variables
+sf_census_disease <- left_join(sf_census1, asthma, by=c("Neighborhood"="Location"))
+
+sf_census_disease <- left_join(sf_census_disease, diabetes, by=c("Neighborhood"="Location"))
+
+sf_census_disease <- left_join(sf_census_disease, hypertension, by=c("Neighborhood"="Location"))
+
+sf_census_all<- left_join(sf_census_disease, sfcollege.data, by=c("FIPS"="Tract2000"))
+sf_census_all<- left_join(sf_census_all, sfincome.data, by=c("FIPS"="Tract2000"))
+sf_census_all<- left_join(sf_census_all, sfcPMlevels.data, by=c("FIPS"="Tract2010"))
+
+sf_census_all<-distinct(sf_census_all)
+
+sf_census_all.map <- inner_join(sftract.map, sf_census_all, by=c("id"="FIPS"))
+```
+
+##Exporatory Maps
+###Diseases
+```{r, echo=FALSE, warning=FALSE}
+#exploring the data
+#Diseases
+#asthma
+asthma <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=er_per_10000_a))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "tomato", name = "Asthma ER Visits per 10k")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("Rate of ER Visits for Asthma per 10k by Neighborhood")
+asthma
+
+#diabetes
+diabetes <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=er_per_10000_d))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "tomato", name = "Diabetes ER Visits per 10k")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("Rate of ER Visits for Diabetes per 10k by Neighborhood")
+diabetes
+
+#hypertension
+hypertension <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=er_per_10000_h))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "tomato", name = "Hyptertension ER Visits per 10k")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("Rate of ER Visits for Hypertension per 10k by Neighborhood")
+hypertension
+```
+
+
+The above maps display the age-adjusted rates of ER visits per ten thousand people for asthma, diabetes, and hypertension. This data was collected on a neighborhood level and thus we see clearly defined neighborhoods. In particular, the neighborhood in the far-right, known as Bayview/Hunter's Point, shows dramatically high levels of ER visits for all three diseases. The neighborhoods North of Bayview, North of Market, South of Market, and the Tenderloin, also show higher rates of ER visits. These maps suggest that there is interesting variation to the rates of disease in San Francisco that presents itself on a neighborhood level.
+
+###Possible Variables
+```{r, echo=FALSE,warning=FALSE}
+#white
+white <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=perc.white))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "turquoise", name = "Percent White")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("Percent of Population White by Census Tract")
+white
+
+#black
+black <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=perc.black))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "magenta", name = "Percent Black")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("Percent of Population Black and African American by Census Tract")
+black
+
+#asian
+asian <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=perc.asian))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "salmon", name = "Percent Asian")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("Percent of Population Asian and Pacific Islander by Census Tract")
+asian
+
+#Other (Hispanic)
+other <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=perc.other))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "goldenrod", name = "Percent Other (Hispanic)")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  ggtitle("Percent of Population Other/Hispanic by Census Tract")+
+  theme_minimal()
+other
+```
+
+
+The above maps show the percentage of different races in the various census tracts in San Francisco. The racial makeup of each census tract also displays interesting geographic trends, as suspected. Higher populations of white people are seen in the North end of the city along the water and also clustering in the center of the city.
+
+The black and African American community seems to cluster around Bayview/Hunter's Point, and to a lesser degree North of Market.
+
+The asian population is higher on the west and south sides of the city and also in the North East corner where China Town is located.
+
+The "other" population, which in SF is largely going to be hispanic, is higher South of Market in the Mission and more generally in the Southern side of the city.
+
+The racial definition of many neighborhoods, suggests that there could be correlation between disease rates and the racial makeup of an area. 
+
+
+```{r, echo=FALSE, warning=FALSE}
+#PM2.5 Levels
+pm2.5 <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=MEAN_PM))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "purple", name = "PM 2.5 Levels")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("PM 2.5 Levels by Census Tract")
+pm2.5
+
+#Popultion Density
+pop.dens <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=pop.dens))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "sienna", name = "Population Density")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("Population Density by Census Tract")
+pop.dens
+
+#Median Income
+med.income <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=med.income.10k))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "yellowgreen", name = "Median Income in 10k")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("Median Income in 10k by Census Tract")
+med.income
+
+#College Educated
+college <- ggplot(sf_census_all.map, aes(x=long, y=lat, group=group, fill=ColEd_pct))+
+  geom_polygon() +
+  geom_path(col="black", size=0.1) +
+  scale_fill_continuous(low = "white", high = "steelblue", name = "Percent College Educated")+
+  coord_map() +
+  xlab("longitude") + ylab("latitude")+
+  theme_minimal()+
+  ggtitle("Percent of Population with College Education by Census Tract")
+college
+```
+
+
+The above maps are meant to explore the other possible factors of pollution levels and class. PM2.5 levels and population density were used as measures for pollution. PM2.5 levels refer to the amount of small particulate matter in the air including dirt,  dust, soot, and [smoke] (http://www.epa.gov/pmdesignations/faq.htm).
+
+The east side of San Francisco shows higher PM2.5 levels than the west side, likely due to the concentration of industry on the east side of the city. There are particularly high levels around Market Street.
+
+Population density is fairly consistent throughout the city with higher levels appearing only in the area just North of Market.
+
+Median income and Percent of population with some college education were used as measures for class. While there appears to be so geographic patterns, it is difficult to tell as this data came from an old census and so tracts had changed enough that there are several gaps in key areas of interest.
+
+Thus, as the map of PM2.5 levels shows a clear geographic pattern, I will include it in my model in addition to race. Population density does not seem to display much of pattern and the class variables simply lack too much data for an effective analysis (additionally, when the regression was performed with this data, their confidence intervals included zero).
+
+
+##Regression Analysis
+
+```{r, echo=FALSE, warning=FALSE}
+#Regression
+#asthma
+model_a <- lm(er_per_10000_a ~ perc.white +
+                perc.black +
+                perc.asian +
+                perc.other +
+                MEAN_PM, 
+              data=sf_census_all)
+coef_a <- coefficients(model_a)
+coef_a
+round(confint(model_a))
+sf_census_all$resid_a <- resid(model_a)
+
+sf_census_all_a.map <- inner_join(sftract.map, sf_census_all, by=c("id"="FIPS"))
+
+ggplot(sf_census_all_a.map, aes(x=long, y=lat, group=group, fill=resid_a)) +
+  geom_polygon() +
+  geom_path(col="black", size=0.5) +
+  coord_map() +
+  scale_fill_gradient2(name="Residual", low="blue", high="red", mid="white", midpoint=0) +
+  theme_bw()+
+  ggtitle("Asthma ER Visits, Controlling for Race and PM2.5")
+
+#diabetes
+model_d <- lm(er_per_10000_d ~ perc.white + 
+                perc.black +
+                perc.asian +
+                perc.other +
+                MEAN_PM, 
+              data=sf_census_all)
+coef_d <- coefficients(model_d)
+coef_d
+round(confint(model_d))
+sf_census_all$resid_d <- resid(model_d)
+
+sf_census_all_d.map <- inner_join(sftract.map, sf_census_all, by=c("id"="FIPS"))
+
+ggplot(sf_census_all_d.map, aes(x=long, y=lat, group=group, fill=resid_d)) +
+  geom_polygon() +
+  geom_path(col="black", size=0.5) +
+  coord_map() +
+  scale_fill_gradient2(name="Residual", low="blue", high="red", mid="white", midpoint=0) +
+  theme_bw()+
+  ggtitle("Diabetes ER Visits, Controlling for Race and PM2.5")
+
+#hypertension
+model_h <- lm(er_per_10000_h ~ perc.white + 
+                perc.black +
+                perc.asian +
+                perc.other +
+                MEAN_PM , 
+              data=sf_census_all)
+coef_h <- coefficients(model_h)
+coef_h
+round(confint(model_h))
+sf_census_all$resid_h <- resid(model_h)
+
+sf_census_all_h.map <- inner_join(sftract.map, sf_census_all, by=c("id"="FIPS"))
+
+ggplot(sf_census_all_h.map, aes(x=long, y=lat, group=group, fill=resid_h)) +
+  geom_polygon() +
+  geom_path(col="black", size=0.5) +
+  coord_map() +
+  scale_fill_gradient2(name="Residual", low="blue", high="red", mid="white", midpoint=0) +
+  theme_bw()+
+  ggtitle("Hypertension ER Visits, Controlling for Race and PM2.5")
+```
+
+
+I performed a linear regression analysis on the rates of ER visits for asthma, diabetes, and hypertension using the percentages of different races and the PM2.5 levels as variables. In all three regressions, only PM2.5 levels show a strong effect with confidence intervals that do not include zero. For asthma, an increase in 1 in PM2.5 levels corresponds to an increase in ER visits per 10000 of 24. For diabetes, it corresponds to an increase of 8 visits, and for hypertension it corresponds to an increase of 7 visits. 
+
+This data suggests that pollution levels and environmental quality are correlated with levels of disease rates. However, the maps of the residuals indicate that the model is severely lacking and that other variables are influencing the rates of Er visits for these diseases.
+
+
+##Discussion
+
+  Overall, this project suggests that the quality of the air people live in is a strong predictor of the community's health. However, it also suggests that there are other factors beyond race and PM2.5 levels that strongly influence community health.  This project only barely scratches the surface and future studies into the underlying causes of disease rates in San Francisco could be valuable.
+  I do have a couple of hypotheses regarding my results. One flaw with this study is that the health data was collected on the neighborhood level, while the other data was at a census tract level. Unfortunately, neighborhoods and census tracts don't always line up. A more refined analysis could be performed using health data collected on a census tract level, however, that is not currently available for free on the internet. 
+  Another source of concern is the use of ER visits as a proxy for rates of disease. Lower income communities are more likely to visit the ER than to have frequent non-emergency visits to doctor. The use of this metric may have biased this data, though we did not see any clear patterns that linked the higher level sof ER visits and income. 
+  One possibility for future studies would be to look at the changes in the predictor variables and the rates of disease in San Francisco over times. San Francisco has been a huge site for gentrification in the last 20 or 30 years and looking if the disease rates have shifted as community make-up has shifted or if they have stayed fairly constant could inform us as to whether the diseases are a problem as a result of the environment or as a result of the people living there.
